@@ -20,6 +20,7 @@ canvas{display:block}
 #con-row{display:flex;align-items:center;border-top:1px solid #3a3a3a;background:#1a1a1a;flex-shrink:0;height:28px}
 #con-row span{padding:0 8px;color:#666;font-family:Consolas,monospace;font-size:13px}
 #cmd{flex:1;background:transparent;border:none;outline:none;color:#e0e0e0;font-family:Consolas,"Courier New",monospace;font-size:13px;padding:0 4px 0 0}
+#wallinfo{position:fixed;left:50%;bottom:48px;transform:translateX(-50%);z-index:6;pointer-events:none;font-family:Consolas,"Courier New",monospace;font-size:13px;color:#0f0;text-align:center;line-height:1.45;display:none;white-space:pre}
 </style>
 </head>
 <body>
@@ -28,6 +29,7 @@ canvas{display:block}
 <div id="fps">0 fps</div>
 </div>
 <div id="cross"></div>
+<div id="wallinfo"></div>
 <div id="con">
 <div id="con-bar"><span id="con-title">Console</span><button id="con-x">×</button></div>
 <div id="con-out"></div>
@@ -66,6 +68,16 @@ let vmOff={x:0,y:-0.4,z:-0.5},vmScale=2,vmRot={x:0,y:Math.PI,z:0};
 let sat=1.18,conVal=1.06,bri=1.03,hue=0,vmBright=1;
 let textR=255,textG=255,textB=255;
 let vmMat=null,vmMatObj7=null;
+let resW=0,resH=0,nativeW=0,nativeH=0;
+let fpsOn=1;
+let moonlightOn=0;
+let moonLight=null;
+let vmMoonLight=null;
+let walldebug=0;
+let wallMarker=null;
+let wallRay=new THREE.Raycaster();
+let adSpaces=[];
+const wallinfoEl=document.getElementById("wallinfo");
 const speedoEl=document.getElementById("speedo");
 const fpsEl=document.getElementById("fps");
 const crossEl=document.getElementById("cross");
@@ -80,7 +92,8 @@ const CMDS=[
 "sv_autobunnyhop","speedcap","speedometer","sensitivity","crosshair","mapscale",
 "viewmodel_x","viewmodel_y","viewmodel_z","viewmodel_scale","viewmodel_rotx","viewmodel_roty","viewmodel_rotz",
 "saturate","contrast","brightness","hue","vm_brightness","textcolor",
-"getpos","setpos","reset","export","import","help"
+"getpos","setpos","reset","export","import","help",
+"resolution","fps","moonlight","walldebug"
 ];
 function applyCanvasFilter(){
 const c=document.querySelector("canvas");
@@ -111,11 +124,16 @@ if(s.vmBright!==undefined)vmBright=s.vmBright;
 if(s.textR!==undefined)textR=s.textR;
 if(s.textG!==undefined)textG=s.textG;
 if(s.textB!==undefined)textB=s.textB;
+if(s.resW!==undefined)resW=s.resW;
+if(s.resH!==undefined)resH=s.resH;
+if(s.fpsOn!==undefined)fpsOn=s.fpsOn;
+if(s.moonlightOn!==undefined)moonlightOn=s.moonlightOn;
+if(s.walldebug!==undefined)walldebug=s.walldebug;
 }catch(_){}
 }
 function saveSettings(){
 localStorage.setItem("bhop_settings",JSON.stringify({
-autobhop,speedcap,speedoOn,sens,crossMode,mapScale,vmOff,vmScale,vmRot,sat,conVal,bri,hue,vmBright,textR,textG,textB
+autobhop,speedcap,speedoOn,sens,crossMode,mapScale,vmOff,vmScale,vmRot,sat,conVal,bri,hue,vmBright,textR,textG,textB,resW,resH,fpsOn,moonlightOn,walldebug
 }));
 }
 function getAllSettings(){
@@ -123,7 +141,7 @@ return{
 autobhop,speedcap,speedoOn,sens,crossMode,mapScale,
 vmOff:{x:vmOff.x,y:vmOff.y,z:vmOff.z},
 vmScale,vmRot:{x:vmRot.x,y:vmRot.y,z:vmRot.z},
-sat,conVal,bri,hue,vmBright,textR,textG,textB
+sat,conVal,bri,hue,vmBright,textR,textG,textB,resW,resH,fpsOn,moonlightOn,walldebug
 };
 }
 function applyAllSettings(s){
@@ -144,8 +162,15 @@ if(s.vmBright!==undefined){vmBright=s.vmBright;applyVmBright()}
 if(s.textR!==undefined)textR=s.textR;
 if(s.textG!==undefined)textG=s.textG;
 if(s.textB!==undefined)textB=s.textB;
+if(s.resW!==undefined)resW=s.resW;
+if(s.resH!==undefined)resH=s.resH;
+if(s.fpsOn!==undefined)fpsOn=s.fpsOn;
+if(s.moonlightOn!==undefined){moonlightOn=s.moonlightOn;applyMoonlight()}
+if(s.walldebug!==undefined)walldebug=s.walldebug;
 applyCanvasFilter();
 applyTextColor();
+applyResolution();
+updateFpsVis();
 saveSettings();
 }
 function doExport(){
@@ -184,7 +209,14 @@ vmModel.scale.setScalar(vmScale);
 vmModel.rotation.set(vmRot.x,vmRot.y,vmRot.z);
 }
 function applyVmBright(){
-if(vmMat)vmMat.color.setRGB(vmBright,vmBright,vmBright);
+if(vmMat){
+if(vmMat.isMeshStandardMaterial){
+vmMat.color.setRGB(vmBright,vmBright,vmBright);
+vmMat.emissive.setRGB(0.02*vmBright,0.02*vmBright,0.02*vmBright);
+}else{
+vmMat.color.setRGB(vmBright,vmBright,vmBright);
+}
+}
 if(vmMatObj7)vmMatObj7.color.setRGB(vmBright,vmBright,vmBright);
 }
 function log(t){
@@ -271,6 +303,313 @@ moonMesh.position.set(0,4200,-2800);
 scene.add(moonMesh);
 });
 }
+function applyMoonlight(){
+if(!scene)return;
+if(moonlightOn){
+if(!moonLight){
+moonLight=new THREE.DirectionalLight(0xb0c4de,0.55);
+moonLight.position.set(400,3800,-2200);
+scene.add(moonLight);
+}
+moonLight.visible=true;
+if(!vmMoonLight){
+vmMoonLight=new THREE.DirectionalLight(0xb0c4de,0.7);
+vmMoonLight.position.set(0.4,0.6,-0.3);
+if(camera)camera.add(vmMoonLight);
+}
+vmMoonLight.visible=true;
+if(mapRoot){
+mapRoot.traverse((c)=>{
+if(c.isMesh&&c.material){
+const mats=Array.isArray(c.material)?c.material:[c.material];
+mats.forEach(m=>{
+if(m.isMeshBasicMaterial){
+const old=m;
+const std=new THREE.MeshStandardMaterial({
+map:old.map||null,
+color:old.color?old.color.clone():new THREE.Color(0xcccccc),
+side:old.side!==undefined?old.side:THREE.FrontSide,
+roughness:0.85,
+metalness:0.05
+});
+if(old.map)std.map.colorSpace=THREE.SRGBColorSpace;
+c.material=Array.isArray(c.material)?mats.map((mm,i)=>i===mats.indexOf(old)?std:mm):std;
+}
+});
+}
+});
+}
+if(vmModel){
+vmModel.traverse((c)=>{
+if(!c.isMesh)return;
+const n=(c.name||"").toLowerCase();
+if(n.includes("geometrynode_3")||n==="geometrynode_3"){
+if(c.material&&c.material.isMeshBasicMaterial){
+const old=c.material;
+const std=new THREE.MeshStandardMaterial({
+map:old.map||null,
+color:old.color?old.color.clone():new THREE.Color(0xffffff),
+side:THREE.DoubleSide,
+roughness:0.22,
+metalness:0.65,
+envMapIntensity:1.2
+});
+if(old.map)std.map.colorSpace=THREE.SRGBColorSpace;
+c.material=std;
+vmMat=std;
+applyVmBright();
+}
+}else if(n.includes("object_7")||n==="object_7"){
+if(c.material&&c.material.isMeshBasicMaterial){
+const old=c.material;
+const std=new THREE.MeshStandardMaterial({
+map:old.map||null,
+color:old.color?old.color.clone():new THREE.Color(0xffffff),
+side:THREE.DoubleSide,
+roughness:0.75,
+metalness:0.1
+});
+if(old.map)std.map.colorSpace=THREE.SRGBColorSpace;
+c.material=std;
+vmMatObj7=std;
+applyVmBright();
+}
+}
+});
+}
+}else{
+if(moonLight)moonLight.visible=false;
+if(vmMoonLight)vmMoonLight.visible=false;
+if(mapRoot){
+mapRoot.traverse((c)=>{
+if(c.isMesh&&c.material){
+const mats=Array.isArray(c.material)?c.material:[c.material];
+mats.forEach(m=>{
+if(m.isMeshStandardMaterial){
+const old=m;
+const basic=new THREE.MeshBasicMaterial({
+map:old.map||null,
+color:old.color?old.color.clone():new THREE.Color(0xcccccc),
+side:old.side!==undefined?old.side:THREE.FrontSide
+});
+if(old.map)basic.map.colorSpace=THREE.SRGBColorSpace;
+c.material=Array.isArray(c.material)?mats.map((mm,i)=>i===mats.indexOf(old)?basic:mm):basic;
+}
+});
+}
+});
+}
+if(vmModel){
+vmModel.traverse((c)=>{
+if(!c.isMesh)return;
+const n=(c.name||"").toLowerCase();
+if(n.includes("geometrynode_3")||n==="geometrynode_3"){
+if(c.material&&c.material.isMeshStandardMaterial){
+const old=c.material;
+const basic=new THREE.MeshBasicMaterial({
+map:old.map||null,
+color:old.color?old.color.clone():new THREE.Color(0xffffff),
+side:THREE.DoubleSide
+});
+if(old.map)basic.map.colorSpace=THREE.SRGBColorSpace;
+c.material=basic;
+vmMat=basic;
+applyVmBright();
+}
+}else if(n.includes("object_7")||n==="object_7"){
+if(c.material&&c.material.isMeshStandardMaterial){
+const old=c.material;
+const basic=new THREE.MeshBasicMaterial({
+map:old.map||null,
+color:old.color?old.color.clone():new THREE.Color(0xffffff),
+side:THREE.DoubleSide
+});
+if(old.map)basic.map.colorSpace=THREE.SRGBColorSpace;
+c.material=basic;
+vmMatObj7=basic;
+applyVmBright();
+}
+}
+});
+}
+}
+}
+function applyResolution(){
+if(!renderer)return;
+nativeW=window.innerWidth;
+nativeH=window.innerHeight;
+let w=resW>0?resW:nativeW;
+let h=resH>0?resH:nativeH;
+if(w>nativeW)w=nativeW;
+if(h>nativeH)h=nativeH;
+renderer.setSize(w,h,false);
+const canvas=renderer.domElement;
+canvas.style.width=nativeW+"px";
+canvas.style.height=nativeH+"px";
+camera.aspect=w/h;
+camera.updateProjectionMatrix();
+}
+function updateFpsVis(){
+fpsEl.style.display=fpsOn?"block":"none";
+}
+function makeWallMarker(){
+if(wallMarker)return;
+const geo=new THREE.PlaneGeometry(48,32);
+const mat=new THREE.MeshBasicMaterial({
+color:0x00ff44,
+transparent:true,
+opacity:0.55,
+side:THREE.DoubleSide,
+depthTest:true,
+depthWrite:false
+});
+wallMarker=new THREE.Mesh(geo,mat);
+wallMarker.visible=false;
+wallMarker.renderOrder=20;
+scene.add(wallMarker);
+const edgeGeo=new THREE.EdgesGeometry(geo);
+const edgeMat=new THREE.LineBasicMaterial({color:0x00ff88,linewidth:2});
+const edges=new THREE.LineSegments(edgeGeo,edgeMat);
+edges.renderOrder=21;
+wallMarker.add(edges);
+}
+function updateWallDebug(){
+if(!walldebug||!colliders.length||!camera){
+if(wallMarker)wallMarker.visible=false;
+wallinfoEl.style.display="none";
+return;
+}
+makeWallMarker();
+const dir=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+wallRay.set(camera.position,dir);
+wallRay.far=2000;
+const hits=wallRay.intersectObjects(colliders,true);
+if(!hits.length){
+wallMarker.visible=false;
+wallinfoEl.style.display="none";
+return;
+}
+const hit=hits[0];
+const n=hit.face?hit.face.normal.clone():new THREE.Vector3(0,1,0);
+n.transformDirection(hit.object.matrixWorld);
+n.normalize();
+const pos=hit.point.clone().addScaledVector(n,0.8);
+wallMarker.position.copy(pos);
+wallMarker.lookAt(pos.clone().add(n));
+wallMarker.visible=true;
+const yaw=Math.atan2(n.x,n.z)*180/Math.PI;
+const pitch=Math.asin(Math.max(-1,Math.min(1,n.y)))*180/Math.PI;
+const nx=n.x.toFixed(3),ny=n.y.toFixed(3),nz=n.z.toFixed(3);
+wallinfoEl.style.display="block";
+wallinfoEl.textContent=
+"pos  "+hit.point.x.toFixed(2)+"  "+hit.point.y.toFixed(2)+"  "+hit.point.z.toFixed(2)+"\n"+
+"normal  "+nx+"  "+ny+"  "+nz+"\n"+
+"yaw  "+yaw.toFixed(1)+"   pitch  "+pitch.toFixed(1)+"\n"+
+"dist  "+hit.distance.toFixed(1);
+}
+function createAdCanvas(w,h,failed){
+const c=document.createElement("canvas");
+c.width=w;c.height=h;
+const ctx=c.getContext("2d");
+if(failed){
+ctx.fillStyle="#1a1a1a";
+ctx.fillRect(0,0,w,h);
+ctx.strokeStyle="#444";
+ctx.lineWidth=3;
+ctx.strokeRect(2,2,w-4,h-4);
+ctx.fillStyle="#ccc";
+ctx.font="bold "+Math.floor(h*0.09)+"px Tahoma,Arial,sans-serif";
+ctx.textAlign="center";
+ctx.textBaseline="middle";
+const lines=["please dont use an ad blocker","we need money"];
+const lh=h*0.14;
+const startY=h/2-(lines.length-1)*lh/2;
+lines.forEach((t,i)=>{
+ctx.fillText(t,w/2,startY+i*lh);
+});
+}else{
+ctx.fillStyle="#111";
+ctx.fillRect(0,0,w,h);
+ctx.strokeStyle="#333";
+ctx.lineWidth=4;
+ctx.strokeRect(2,2,w-4,h-4);
+ctx.fillStyle="#666";
+ctx.font="bold "+Math.floor(h*0.12)+"px Tahoma,Arial,sans-serif";
+ctx.textAlign="center";
+ctx.textBaseline="middle";
+ctx.fillText("AD",w/2,h/2);
+ctx.fillStyle="#444";
+ctx.font=Math.floor(h*0.06)+"px Consolas,monospace";
+ctx.fillText("sponsored",w/2,h*0.72);
+}
+return c;
+}
+function spawnAdSpaces(){
+const defs=[
+{pos:[2010.08,145.79,-2358.26],n:[-1.000,0.002,0.0012],w:96,h:64},
+{pos:[288.74,-53.11,-2877.89],n:[0.012,-0.002,1.000],w:96,h:64},
+{pos:[-1933.37,92.27,168.46],n:[-0.012,0.002,-1.000],w:96,h:64}
+];
+defs.forEach((d,i)=>{
+const failed=true;
+const hi=createAdCanvas(512,341,failed);
+const lo=createAdCanvas(64,43,failed);
+const texHi=new THREE.CanvasTexture(hi);
+texHi.colorSpace=THREE.SRGBColorSpace;
+texHi.minFilter=THREE.LinearFilter;
+texHi.magFilter=THREE.LinearFilter;
+const texLo=new THREE.CanvasTexture(lo);
+texLo.colorSpace=THREE.SRGBColorSpace;
+texLo.minFilter=THREE.NearestFilter;
+texLo.magFilter=THREE.NearestFilter;
+const mat=new THREE.MeshBasicMaterial({
+map:texHi,
+side:THREE.DoubleSide,
+transparent:false,
+depthWrite:true
+});
+const geo=new THREE.PlaneGeometry(d.w,d.h);
+const mesh=new THREE.Mesh(geo,mat);
+const n=new THREE.Vector3(d.n[0],d.n[1],d.n[2]).normalize();
+const p=new THREE.Vector3(d.pos[0],d.pos[1],d.pos[2]).addScaledVector(n,4.5);
+mesh.position.copy(p);
+mesh.lookAt(p.clone().add(n));
+mesh.renderOrder=5;
+scene.add(mesh);
+adSpaces.push({
+mesh,
+texHi,
+texLo,
+mat,
+lastUpdate:0,
+lod:"hi",
+pos:p.clone()
+});
+});
+}
+function updateAdLods(now){
+if(!camera||!adSpaces.length)return;
+const camPos=camera.position;
+for(const ad of adSpaces){
+const dist=camPos.distanceTo(ad.pos);
+const near=dist<520;
+const targetLod=near?"hi":"lo";
+const interval=near?0:200;
+if(targetLod!==ad.lod||(now-ad.lastUpdate>=interval)){
+if(targetLod==="hi"){
+ad.mat.map=ad.texHi;
+ad.mat.needsUpdate=true;
+ad.lod="hi";
+}else{
+ad.mat.map=ad.texLo;
+ad.mat.needsUpdate=true;
+ad.lod="lo";
+}
+ad.lastUpdate=now;
+}
+ad.mesh.visible=dist<2800;
+}
+}
 function loadVm(){
 const texLoader=new THREE.TextureLoader();
 let loaded=0;
@@ -309,6 +648,7 @@ vmRoot.add(vmModel);
 camera.add(vmRoot);
 scene.add(camera);
 vmProgress=1;vmTarget=1;
+if(moonlightOn)applyMoonlight();
 log("vm loaded");
 },undefined,()=>log("obj load fail"));
 };
@@ -347,16 +687,24 @@ renderer.setPixelRatio(1);
 renderer.shadowMap.enabled=false;
 renderer.autoClear=true;
 document.body.appendChild(renderer.domElement);
+nativeW=window.innerWidth;
+nativeH=window.innerHeight;
+if(resW<=0)resW=nativeW;
+if(resH<=0)resH=nativeH;
+applyResolution();
 makeStars();
 loadMoon();
 loadMap();
 loadVm();
 loadSounds();
+spawnAdSpaces();
 setCrosshair(crossMode);
+updateFpsVis();
+applyMoonlight();
 window.addEventListener("resize",()=>{
-camera.aspect=innerWidth/innerHeight;
-camera.updateProjectionMatrix();
-renderer.setSize(innerWidth,innerHeight);
+nativeW=window.innerWidth;
+nativeH=window.innerHeight;
+applyResolution();
 });
 document.addEventListener("click",()=>{
 if(con.style.display==="flex")return;
@@ -456,6 +804,7 @@ box.getSize(rawMapSize);
 applyMapScale();
 mapLoaded=true;
 log("map loaded");
+if(moonlightOn)applyMoonlight();
 },undefined,()=>{
 const floor=new THREE.Mesh(
 new THREE.BoxGeometry(2000,40,2000),
@@ -501,6 +850,7 @@ log("viewmodel_x/y/z/scale/rotx/roty/rotz");
 log("saturate <n>  contrast <n>  brightness <n>  hue <deg>  vm_brightness <n>");
 log("textcolor <r> <g> <b>");
 log("sv_autobunnyhop speedcap speedometer sensitivity crosshair mapscale");
+log("resolution <wxh>  fps 0/1  moonlight 0/1  walldebug 0/1");
 log("getpos setpos reset export import help");
 }else if(c==="sv_autobunnyhop"){
 if(v==="0"||v==="1"){autobhop=+v;saveSettings();log("sv_autobunnyhop "+autobhop)}
@@ -565,6 +915,30 @@ textB=Math.max(0,Math.min(255,b));
 applyTextColor();saveSettings();
 log("textcolor "+textR+" "+textG+" "+textB);
 }else log("textcolor = "+textR+" "+textG+" "+textB);
+}else if(c==="resolution"){
+if(v){
+const m=v.match(/^(\d+)x(\d+)$/i);
+if(m){
+let w=parseInt(m[1]),h=parseInt(m[2]);
+if(w>nativeW)w=nativeW;
+if(h>nativeH)h=nativeH;
+if(w>0&&h>0){
+resW=w;resH=h;
+applyResolution();
+saveSettings();
+log("resolution "+resW+"x"+resH);
+}else log("invalid resolution");
+}else log("usage: resolution 1920x1080");
+}else log("resolution = "+(resW||nativeW)+"x"+(resH||nativeH));
+}else if(c==="fps"){
+if(v==="0"||v==="1"){fpsOn=+v;updateFpsVis();saveSettings();log("fps "+fpsOn)}
+else log("fps = "+fpsOn);
+}else if(c==="moonlight"){
+if(v==="0"||v==="1"){moonlightOn=+v;applyMoonlight();saveSettings();log("moonlight "+moonlightOn)}
+else log("moonlight = "+moonlightOn);
+}else if(c==="walldebug"){
+if(v==="0"||v==="1"){walldebug=+v;saveSettings();log("walldebug "+walldebug);if(!walldebug){if(wallMarker)wallMarker.visible=false;wallinfoEl.style.display="none"}}
+else log("walldebug = "+walldebug);
 }else if(c==="getpos"){
 log(player.pos.x.toFixed(2)+" "+player.pos.y.toFixed(2)+" "+player.pos.z.toFixed(2));
 }else if(c==="setpos"){
@@ -755,6 +1129,11 @@ if(moonMesh){
 moonMesh.position.set(player.pos.x+400,player.pos.y+3800,player.pos.z-2200);
 moonMesh.lookAt(camera.position);
 }
+if(moonLight&&moonlightOn){
+moonLight.position.set(player.pos.x+400,player.pos.y+3800,player.pos.z-2200);
+}
+updateWallDebug();
+updateAdLods(performance.now());
 const hspd=Math.hypot(player.vel.x,player.vel.z);
 speedoEl.style.display=speedoOn?"block":"none";
 if(speedoOn)speedoEl.textContent=Math.round(hspd)+" u/s";
@@ -763,7 +1142,7 @@ const now=performance.now();
 if(now-lastFps>=500){
 fpsVal=Math.round(frames*1000/(now-lastFps));
 frames=0;lastFps=now;
-fpsEl.textContent=fpsVal+" fps";
+if(fpsOn)fpsEl.textContent=fpsVal+" fps";
 }
 if(vmRoot&&vmRoot.visible){
 vmRoot.visible=false;
